@@ -531,7 +531,7 @@ class HarkMockData {
       ChatMessage(
         id: 'm3',
         sender: 'hark',
-        text: 'Your PG&E bill is due tomorrow ($84.20), and Delta check-in for flight DL 412 is now live with Seat 14A available. I can execute both via autonomous Handoff.',
+        text: 'Your PG&E bill is due tomorrow (\$84.20), and Delta check-in for flight DL 412 is now live with Seat 14A available. I can execute both via autonomous Handoff.',
         timestamp: DateTime.now().subtract(const Duration(minutes: 21)),
         spawnedTask: tasks[0], // PG&E bill
       ),
