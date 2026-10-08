@@ -36,11 +36,12 @@ if [ -n "$RUN_ID" ] && [ "$RUN_ID" != "null" ]; then
     gh run watch "$RUN_ID" --exit-status || true
 
     echo "=== 5. Downloading APK Artifact ==="
-    mkdir -p /sdcard/Download
-    gh run download "$RUN_ID" --name HarkPro-Release-APK --dir /sdcard/Download/ 2>/dev/null || true
+    mkdir -p /sdcard/Download/hark_apk_tmp
+    rm -rf /sdcard/Download/hark_apk_tmp/*
+    gh run download "$RUN_ID" --name HarkPro-Release-APK --dir /sdcard/Download/hark_apk_tmp/ 2>/dev/null || true
     
     # Locate downloaded apk and copy to standard destination
-    APK_FILE=$(find /sdcard/Download -name "*.apk" -type f | head -n 1)
+    APK_FILE=$(find /sdcard/Download/hark_apk_tmp -name "*.apk" -type f | head -n 1)
     if [ -n "$APK_FILE" ]; then
         cp "$APK_FILE" /sdcard/Download/HarkPro.apk 2>/dev/null || true
         echo "SUCCESS: APK saved to /sdcard/Download/HarkPro.apk"
