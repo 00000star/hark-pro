@@ -1,6 +1,8 @@
 import 'dart:async';
 import 'package:flutter/material.dart';
 import '../models/hark_models.dart';
+import '../models/sdui_schema.dart';
+import '../services/hark_api_service.dart';
 import '../widgets/action_button_card.dart';
 
 class ChatAgentScreen extends StatefulWidget {
@@ -24,6 +26,7 @@ class _ChatAgentScreenState extends State<ChatAgentScreen>
   bool _isListeningVoice = false;
   bool _isAiTyping = false;
   late AnimationController _micPulseController;
+  StreamSubscription<HarkRemoteWidget>? _widgetSub;
 
   final List<String> _suggestionChips = [
     "Check my flight",
@@ -41,10 +44,35 @@ class _ChatAgentScreenState extends State<ChatAgentScreen>
       vsync: this,
       duration: const Duration(milliseconds: 900),
     )..repeat(reverse: true);
+
+    // Listen to SDUI remote widget emissions from HarkApiService
+    _widgetSub = HarkApiService.instance.remoteWidgetStream.listen((remoteWidget) {
+      if (mounted) {
+        setState(() {
+          for (int i = _messages.length - 1; i >= 0; i--) {
+            if (_messages[i].sender == 'hark' && _messages[i].remoteWidget == null) {
+              final old = _messages[i];
+              _messages[i] = ChatMessage(
+                id: old.id,
+                sender: old.sender,
+                text: old.text,
+                timestamp: old.timestamp,
+                spawnedTask: old.spawnedTask,
+                dynamicPanelType: old.dynamicPanelType,
+                remoteWidget: remoteWidget,
+              );
+              break;
+            }
+          }
+        });
+        _scrollToBottom();
+      }
+    });
   }
 
   @override
   void dispose() {
+    _widgetSub?.cancel();
     _textController.dispose();
     _scrollController.dispose();
     _micPulseController.dispose();
@@ -63,7 +91,7 @@ class _ChatAgentScreenState extends State<ChatAgentScreen>
     });
   }
 
-  void _handleSendMessage(String query) {
+  void _handleSendMessage(String query) async {
     if (query.trim().isEmpty) return;
 
     final userMsg = ChatMessage(
@@ -80,36 +108,31 @@ class _ChatAgentScreenState extends State<ChatAgentScreen>
     _textController.clear();
     _scrollToBottom();
 
+    // Submit task to dual-mode HarkApiService
+    final spawnedTask = await HarkApiService.instance.submitTask(query.trim());
+
     // AI thinking delay
-    Timer(const Duration(milliseconds: 700), () {
+    Timer(const Duration(milliseconds: 650), () {
       if (!mounted) return;
-      _respondToQuery(query.toLowerCase());
+      _respondToQuery(query.toLowerCase(), spawnedTask);
     });
   }
 
-  void _respondToQuery(String lowerQuery) {
+  void _respondToQuery(String lowerQuery, HarkTask task) {
     String responseText = "Understood. I have initiated the workflow in the Handoff Sandbox.";
-    HarkTask? taskToSpawn;
-
-    final mockTasks = HarkMockData.getMockTasks();
 
     if (lowerQuery.contains('flight') || lowerQuery.contains('delta') || lowerQuery.contains('check')) {
       responseText = "Flight DL 412 check-in is ready. Seat 14A is reserved in Main Cabin Extra with TSA PreCheck confirmed.";
-      taskToSpawn = mockTasks[1]; // Delta
     } else if (lowerQuery.contains('bill') || lowerQuery.contains('electric') || lowerQuery.contains('pge') || lowerQuery.contains('pay')) {
       responseText = "PG&E Electric statement balance is \$84.20. Ready to execute single-click ACH payment from your Chase Checking account.";
-      taskToSpawn = mockTasks[0]; // PGE
     } else if (lowerQuery.contains('pizza') || lowerQuery.contains('doordash') || lowerQuery.contains('order') || lowerQuery.contains('food')) {
       responseText = "Tony's Pizza Napoletana cart loaded with 16\" Margherita. DashPass discount applied with \$0 delivery fee.";
-      taskToSpawn = mockTasks[2]; // DoorDash
     } else if (lowerQuery.contains('amazon') || lowerQuery.contains('return') || lowerQuery.contains('label')) {
       responseText = "Amazon Order #114-8921932 is eligible for frictionless drop-off at The UPS Store (0.3 mi away). \$348.00 refund ready.";
-      taskToSpawn = mockTasks[3]; // Amazon
     } else if (lowerQuery.contains('nutrition') || lowerQuery.contains('health') || lowerQuery.contains('panel')) {
       responseText = "Dynamic Nutrition & Health Panel generated. Daily caloric target 2,400 kcal, current hydration tracking 80 oz.";
     } else {
       responseText = "I've analyzed your query and prepared an automated computer-use session in your Hark Virtual Sandbox.";
-      taskToSpawn = mockTasks[0];
     }
 
     setState(() {
@@ -120,7 +143,7 @@ class _ChatAgentScreenState extends State<ChatAgentScreen>
           sender: 'hark',
           text: responseText,
           timestamp: DateTime.now(),
-          spawnedTask: taskToSpawn,
+          spawnedTask: task,
         ),
       );
     });
@@ -235,26 +258,45 @@ class _ChatAgentScreenState extends State<ChatAgentScreen>
               ),
             ],
           ),
-          Container(
-            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-            decoration: BoxDecoration(
-              color: Colors.white.withOpacity(0.08),
-              borderRadius: BorderRadius.circular(10),
-            ),
-            child: const Row(
-              children: [
-                Icon(Icons.lock_outline_rounded,
-                    color: Color(0xFF30D158), size: 12),
-                SizedBox(width: 4),
-                Text(
-                  "Enclave",
-                  style: TextStyle(
-                      color: Colors.white70,
-                      fontSize: 10,
-                      fontWeight: FontWeight.bold),
+          // Dual-mode connection indicator
+          ValueListenableBuilder<HarkApiMode>(
+            valueListenable: HarkApiService.instance.connectionStatus,
+            builder: (context, mode, _) {
+              final isLive = mode == HarkApiMode.online_live;
+              return GestureDetector(
+                onTap: () => HarkApiService.instance.checkBackendHealth(),
+                child: Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                  decoration: BoxDecoration(
+                    color: (isLive ? const Color(0xFF30D158) : const Color(0xFF00E5FF))
+                        .withOpacity(0.12),
+                    borderRadius: BorderRadius.circular(10),
+                    border: Border.all(
+                      color: (isLive ? const Color(0xFF30D158) : const Color(0xFF00E5FF))
+                          .withOpacity(0.3),
+                    ),
+                  ),
+                  child: Row(
+                    children: [
+                      Icon(
+                        isLive ? Icons.wifi_rounded : Icons.lock_outline_rounded,
+                        color: isLive ? const Color(0xFF30D158) : const Color(0xFF00E5FF),
+                        size: 12,
+                      ),
+                      const SizedBox(width: 4),
+                      Text(
+                        isLive ? "STARBOY LIVE" : "Autonomous",
+                        style: TextStyle(
+                          color: isLive ? const Color(0xFF30D158) : Colors.white70,
+                          fontSize: 10,
+                          fontWeight: FontWeight.bold,
+                        ),
+                      ),
+                    ],
+                  ),
                 ),
-              ],
-            ),
+              );
+            },
           ),
         ],
       ),
@@ -362,8 +404,31 @@ class _ChatAgentScreenState extends State<ChatAgentScreen>
             ],
           ),
 
-          // Spawned Action Button Card
-          if (msg.spawnedTask != null) ...[
+          // Rendered SDUI HarkRemoteWidget or Spawned Action Card
+          if (msg.remoteWidget != null) ...[
+            const SizedBox(height: 10),
+            Padding(
+              padding: const EdgeInsets.only(left: 36),
+              child: msg.remoteWidget!.buildWidget(
+                context,
+                onAction: (action, params) {
+                  if (msg.spawnedTask != null) {
+                    widget.onExecuteTask?.call(msg.spawnedTask!);
+                  }
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    SnackBar(
+                      backgroundColor: const Color(0xFF161926),
+                      content: Text(
+                        "Remote SDUI Action triggered: $action",
+                        style: const TextStyle(color: Colors.white),
+                      ),
+                      duration: const Duration(seconds: 2),
+                    ),
+                  );
+                },
+              ),
+            ),
+          ] else if (msg.spawnedTask != null) ...[
             const SizedBox(height: 10),
             Padding(
               padding: const EdgeInsets.only(left: 36),

@@ -1,6 +1,8 @@
 import 'package:flutter/cupertino.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import '../models/hark_models.dart';
+import '../services/vault_service.dart';
 
 class VaultScreen extends StatefulWidget {
   const VaultScreen({super.key});
@@ -10,21 +12,62 @@ class VaultScreen extends StatefulWidget {
 }
 
 class _VaultScreenState extends State<VaultScreen> {
-  late List<ConnectedAccount> _accounts;
+  late List<VaultAccount> _accounts;
   bool _biometricsActive = true;
+  bool _isAuthenticating = false;
 
   @override
   void initState() {
     super.initState();
-    _accounts = HarkMockData.getMockAccounts();
+    _accounts = VaultService.instance.getConnectedAccounts();
   }
 
-  void _toggleAccount(ConnectedAccount account, bool value) {
+  Future<void> _handleBiometricAuthToggle(bool value) async {
+    setState(() => _isAuthenticating = true);
+    final success = await VaultService.instance.authenticateBiometrics(
+      reason: value
+          ? "Enable Biometric Gate for Hardware Enclave"
+          : "Disable Biometric Gate",
+    );
+    if (!mounted) return;
     setState(() {
-      account.isConnected = value;
+      _isAuthenticating = false;
+      if (success) {
+        _biometricsActive = value;
+      }
+    });
+
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        backgroundColor: const Color(0xFF161A26),
+        content: Text(
+          success
+              ? (_biometricsActive
+                  ? "Biometric Gate Armed: Hardware Keystore Bound"
+                  : "Biometric Gate Disarmed")
+              : "Biometric Authentication Cancelled",
+          style: const TextStyle(color: Colors.white),
+        ),
+        duration: const Duration(seconds: 2),
+      ),
+    );
+  }
+
+  Future<void> _toggleAccount(VaultAccount account, bool value) async {
+    if (value && _biometricsActive) {
+      // Require real biometric verification to reconnect an account
+      final verified = await VaultService.instance.authenticateBiometrics(
+        reason: "Authenticate Enclave to connect ${account.name}",
+      );
+      if (!verified) return;
+    }
+
+    setState(() {
+      VaultService.instance.toggleAccount(account.id, value);
     });
 
     final action = value ? "connected to" : "disconnected from";
+    if (!mounted) return;
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(
         backgroundColor: const Color(0xFF161A26),
@@ -34,6 +77,105 @@ class _VaultScreenState extends State<VaultScreen> {
         ),
         duration: const Duration(seconds: 2),
       ),
+    );
+  }
+
+  void _inspectEncryptedPayload(VaultAccount account) {
+    final payload = account.encryptedPayload;
+    if (payload == null) return;
+
+    showModalBottomSheet(
+      context: context,
+      backgroundColor: const Color(0xFF121420),
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
+      ),
+      builder: (context) {
+        return Padding(
+          padding: const EdgeInsets.all(20),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Row(
+                children: [
+                  Icon(Icons.lock_clock_rounded,
+                      color: account.brandColor, size: 22),
+                  const SizedBox(width: 10),
+                  Text(
+                    "${account.name} • AES-256 GCM Payload",
+                    style: const TextStyle(
+                      color: Colors.white,
+                      fontSize: 16,
+                      fontWeight: FontWeight.bold,
+                    ),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 16),
+              _buildCipherRow("IV (96-Bit Nonce):", payload.ivHex),
+              const SizedBox(height: 8),
+              _buildCipherRow("Ciphertext Hex:", payload.ciphertextHex),
+              const SizedBox(height: 8),
+              _buildCipherRow("GHASH Tag (128-Bit):", payload.tagHex),
+              const SizedBox(height: 8),
+              _buildCipherRow("Master Key Fingerprint:", payload.keyFingerprint),
+              const SizedBox(height: 16),
+              SizedBox(
+                width: double.infinity,
+                child: ElevatedButton.icon(
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: const Color(0xFF0A84FF),
+                    shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(12)),
+                  ),
+                  icon: const Icon(Icons.copy_rounded, size: 16),
+                  label: const Text("Copy Encrypted Payload"),
+                  onPressed: () {
+                    Clipboard.setData(ClipboardData(text: payload.ciphertextHex));
+                    Navigator.pop(context);
+                    ScaffoldMessenger.of(context).showSnackBar(
+                      const SnackBar(
+                        content: Text("Encrypted payload copied to clipboard"),
+                      ),
+                    );
+                  },
+                ),
+              ),
+            ],
+          ),
+        );
+      },
+    );
+  }
+
+  Widget _buildCipherRow(String label, String value) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text(label,
+            style: const TextStyle(color: Colors.white54, fontSize: 11)),
+        const SizedBox(height: 2),
+        Container(
+          width: double.infinity,
+          padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+          decoration: BoxDecoration(
+            color: Colors.black38,
+            borderRadius: BorderRadius.circular(8),
+            border: Border.all(color: Colors.white12),
+          ),
+          child: Text(
+            value,
+            style: const TextStyle(
+              color: Color(0xFF00E5FF),
+              fontSize: 11,
+              fontFamily: 'monospace',
+            ),
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+          ),
+        ),
+      ],
     );
   }
 
@@ -94,7 +236,7 @@ class _VaultScreenState extends State<VaultScreen> {
             ),
             const SizedBox(height: 10),
             _buildAuditTrailCard(),
-            const SizedBox(height: 80), // Padding for floating bar
+            const SizedBox(height: 80),
           ],
         ),
       ),
@@ -179,9 +321,9 @@ class _VaultScreenState extends State<VaultScreen> {
                         CupertinoSwitch(
                           value: _biometricsActive,
                           activeColor: const Color(0xFF30D158),
-                          onChanged: (val) {
-                            setState(() => _biometricsActive = val);
-                          },
+                          onChanged: _isAuthenticating
+                              ? null
+                              : _handleBiometricAuthToggle,
                         ),
                       ],
                     ),
@@ -195,7 +337,7 @@ class _VaultScreenState extends State<VaultScreen> {
                     ),
                     const SizedBox(height: 2),
                     Text(
-                      _biometricsActive ? "Face ID Active" : "Disabled",
+                      _biometricsActive ? "Biometrics Active" : "Disabled",
                       style: TextStyle(
                         color: _biometricsActive
                             ? const Color(0xFF30D158)
@@ -276,7 +418,7 @@ class _VaultScreenState extends State<VaultScreen> {
     );
   }
 
-  Widget _buildAccountCard(ConnectedAccount account) {
+  Widget _buildAccountCard(VaultAccount account) {
     return Container(
       margin: const EdgeInsets.only(bottom: 10),
       padding: const EdgeInsets.all(14),
@@ -289,84 +431,138 @@ class _VaultScreenState extends State<VaultScreen> {
               : Colors.white.withOpacity(0.03),
         ),
       ),
-      child: Row(
+      child: Column(
         children: [
-          // Icon Container
-          Container(
-            width: 42,
-            height: 42,
-            decoration: BoxDecoration(
-              color: account.brandColor.withOpacity(0.15),
-              borderRadius: BorderRadius.circular(12),
-              border: Border.all(
-                color: account.brandColor.withOpacity(0.3),
+          Row(
+            children: [
+              // Icon Container
+              Container(
+                width: 42,
+                height: 42,
+                decoration: BoxDecoration(
+                  color: account.brandColor.withOpacity(0.15),
+                  borderRadius: BorderRadius.circular(12),
+                  border: Border.all(
+                    color: account.brandColor.withOpacity(0.3),
+                  ),
+                ),
+                child: Icon(account.icon, color: account.brandColor, size: 20),
               ),
-            ),
-            child: Icon(account.icon, color: account.brandColor, size: 20),
-          ),
-          const SizedBox(width: 14),
+              const SizedBox(width: 14),
 
-          // Details
-          Expanded(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Row(
+              // Details
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
+                    Row(
+                      children: [
+                        Text(
+                          account.name,
+                          style: TextStyle(
+                            color: account.isConnected
+                                ? Colors.white
+                                : Colors.white38,
+                            fontSize: 14,
+                            fontWeight: FontWeight.w700,
+                          ),
+                        ),
+                        const SizedBox(width: 6),
+                        if (account.isConnected)
+                          Container(
+                            padding: const EdgeInsets.symmetric(
+                                horizontal: 5, vertical: 1.5),
+                            decoration: BoxDecoration(
+                              color: const Color(0xFF30D158).withOpacity(0.18),
+                              borderRadius: BorderRadius.circular(6),
+                            ),
+                            child: const Text(
+                              "Synced",
+                              style: TextStyle(
+                                color: Color(0xFF30D158),
+                                fontSize: 9,
+                                fontWeight: FontWeight.bold,
+                              ),
+                            ),
+                          ),
+                      ],
+                    ),
+                    const SizedBox(height: 2),
                     Text(
-                      account.name,
+                      account.emailOrUsername,
+                      style: const TextStyle(color: Colors.white54, fontSize: 11),
+                    ),
+                    const SizedBox(height: 2),
+                    Text(
+                      account.securityLevel,
                       style: TextStyle(
-                        color: account.isConnected
-                            ? Colors.white
-                            : Colors.white38,
-                        fontSize: 14,
-                        fontWeight: FontWeight.w700,
+                        color: account.brandColor.withOpacity(0.8),
+                        fontSize: 10,
+                        fontWeight: FontWeight.w500,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+
+              // Connect / Disconnect Toggle
+              CupertinoSwitch(
+                value: account.isConnected,
+                activeColor: const Color(0xFF30D158),
+                onChanged: (val) => _toggleAccount(account, val),
+              ),
+            ],
+          ),
+
+          // Cryptographic Session Token & AES-256 GCM Pill
+          if (account.isConnected) ...[
+            const SizedBox(height: 10),
+            GestureDetector(
+              onTap: () => _inspectEncryptedPayload(account),
+              child: Container(
+                padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                decoration: BoxDecoration(
+                  color: const Color(0xFF0C0E16),
+                  borderRadius: BorderRadius.circular(10),
+                  border: Border.all(color: Colors.white.withOpacity(0.06)),
+                ),
+                child: Row(
+                  children: [
+                    const Icon(Icons.shield_outlined,
+                        color: Color(0xFF00E5FF), size: 12),
+                    const SizedBox(width: 6),
+                    Expanded(
+                      child: Text(
+                        account.sessionToken,
+                        style: const TextStyle(
+                          color: Color(0xFF00E5FF),
+                          fontSize: 10,
+                          fontFamily: 'monospace',
+                        ),
+                        overflow: TextOverflow.ellipsis,
                       ),
                     ),
                     const SizedBox(width: 6),
-                    if (account.isConnected)
-                      Container(
-                        padding: const EdgeInsets.symmetric(
-                            horizontal: 5, vertical: 1.5),
-                        decoration: BoxDecoration(
-                          color: const Color(0xFF30D158).withOpacity(0.18),
-                          borderRadius: BorderRadius.circular(6),
-                        ),
-                        child: const Text(
-                          "Synced",
-                          style: TextStyle(
-                            color: Color(0xFF30D158),
-                            fontSize: 9,
-                            fontWeight: FontWeight.bold,
-                          ),
+                    Container(
+                      padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 1),
+                      decoration: BoxDecoration(
+                        color: const Color(0xFF30D158).withOpacity(0.15),
+                        borderRadius: BorderRadius.circular(4),
+                      ),
+                      child: const Text(
+                        "AES-256 GCM",
+                        style: TextStyle(
+                          color: Color(0xFF30D158),
+                          fontSize: 8,
+                          fontWeight: FontWeight.bold,
                         ),
                       ),
+                    ),
                   ],
                 ),
-                const SizedBox(height: 2),
-                Text(
-                  account.emailOrUsername,
-                  style: const TextStyle(color: Colors.white54, fontSize: 11),
-                ),
-                const SizedBox(height: 2),
-                Text(
-                  account.securityLevel,
-                  style: TextStyle(
-                    color: account.brandColor.withOpacity(0.8),
-                    fontSize: 10,
-                    fontWeight: FontWeight.w500,
-                  ),
-                ),
-              ],
+              ),
             ),
-          ),
-
-          // Connect / Disconnect Toggle
-          CupertinoSwitch(
-            value: account.isConnected,
-            activeColor: const Color(0xFF30D158),
-            onChanged: (val) => _toggleAccount(account, val),
-          ),
+          ],
         ],
       ),
     );

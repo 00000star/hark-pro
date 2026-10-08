@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:math' as math;
 import 'package:flutter/material.dart';
 import '../models/hark_models.dart';
+import '../services/hark_api_service.dart';
 
 class EmbeddedHandoffViewer extends StatefulWidget {
   final HarkTask activeTask;
@@ -44,6 +45,8 @@ class _EmbeddedHandoffViewerState extends State<EmbeddedHandoffViewer>
   int _activeStepIndex = 0;
   Timer? _stepExecutionTimer;
   Offset? _userTouchOffset;
+  StreamSubscription<HarkTelemetryFrame>? _telemetrySub;
+  String? _liveStreamThought;
 
   @override
   void initState() {
@@ -82,6 +85,24 @@ class _EmbeddedHandoffViewerState extends State<EmbeddedHandoffViewer>
     _cursorController.addStatusListener((status) {
       if (status == AnimationStatus.completed) {
         _triggerClickAtTarget();
+      }
+    });
+
+    // Wire live telemetry stream from STARBOY PRIME / HarkApiService
+    _telemetrySub = HarkApiService.instance.telemetryStream.listen((frame) {
+      if (HarkApiService.instance.connectionStatus.value ==
+          HarkApiMode.online_live) {
+        if (mounted) {
+          setState(() {
+            _cursorPos = Offset(frame.cursorX, frame.cursorY);
+            if (frame.thought.isNotEmpty) {
+              _liveStreamThought = frame.thought;
+            }
+            if (frame.isMouseDown && !_isClicking) {
+              _triggerClickAtTarget();
+            }
+          });
+        }
       }
     });
 
@@ -125,6 +146,11 @@ class _EmbeddedHandoffViewerState extends State<EmbeddedHandoffViewer>
     _stepExecutionTimer?.cancel();
     _activeStepIndex = 0;
     _isPaused = false;
+    if (HarkApiService.instance.connectionStatus.value ==
+        HarkApiMode.online_live) {
+      // In live stream mode, server telemetry drives execution directly
+      return;
+    }
     _moveToStep(_activeStepIndex);
   }
 
@@ -200,8 +226,10 @@ class _EmbeddedHandoffViewerState extends State<EmbeddedHandoffViewer>
       if (_isPaused) {
         _cursorController.stop();
         _stepExecutionTimer?.cancel();
+        HarkApiService.instance.pauseTask();
       } else {
         _cursorController.forward();
+        HarkApiService.instance.resumeTask();
       }
     });
     widget.onTogglePause?.call();
@@ -222,6 +250,7 @@ class _EmbeddedHandoffViewerState extends State<EmbeddedHandoffViewer>
 
   @override
   void dispose() {
+    _telemetrySub?.cancel();
     _stepExecutionTimer?.cancel();
     _cursorController.dispose();
     _rippleController.dispose();
@@ -242,9 +271,13 @@ class _EmbeddedHandoffViewerState extends State<EmbeddedHandoffViewer>
             ? "Handoff paused by operator. Tap Resume to proceed."
             : widget.activeTask.status == TaskStatus.completed
                 ? "Task completed successfully. Credentials encrypted."
-                : widget.isRunning
-                    ? (step?.thoughtTicker ?? "Executing autonomous workflow...")
-                    : "Virtual Computer Ready. Tap Run to initiate Handoff.";
+                : (_liveStreamThought != null &&
+                        HarkApiService.instance.connectionStatus.value ==
+                            HarkApiMode.online_live)
+                    ? _liveStreamThought!
+                    : widget.isRunning
+                        ? (step?.thoughtTicker ?? "Executing autonomous workflow...")
+                        : "Virtual Computer Ready. Tap Run to initiate Handoff.";
 
     return AnimatedContainer(
       duration: const Duration(milliseconds: 300),
@@ -460,21 +493,52 @@ class _EmbeddedHandoffViewerState extends State<EmbeddedHandoffViewer>
           ),
           const SizedBox(width: 8),
 
-          // Sandbox badge
-          Container(
-            padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 3),
-            decoration: BoxDecoration(
-              color: Colors.white.withOpacity(0.06),
-              borderRadius: BorderRadius.circular(6),
-            ),
-            child: const Text(
-              "Sandbox v2.4",
-              style: TextStyle(
-                color: Colors.white38,
-                fontSize: 9,
-                fontWeight: FontWeight.bold,
-              ),
-            ),
+          // Dual-mode connection status badge
+          ValueListenableBuilder<HarkApiMode>(
+            valueListenable: HarkApiService.instance.connectionStatus,
+            builder: (context, mode, _) {
+              final isLive = mode == HarkApiMode.online_live;
+              return GestureDetector(
+                onTap: () {
+                  HarkApiService.instance.checkBackendHealth();
+                },
+                child: Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 3),
+                  decoration: BoxDecoration(
+                    color: (isLive ? const Color(0xFF30D158) : const Color(0xFF00E5FF))
+                        .withOpacity(0.16),
+                    borderRadius: BorderRadius.circular(6),
+                    border: Border.all(
+                      color: (isLive ? const Color(0xFF30D158) : const Color(0xFF00E5FF))
+                          .withOpacity(0.4),
+                    ),
+                  ),
+                  child: Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Container(
+                        width: 5,
+                        height: 5,
+                        decoration: BoxDecoration(
+                          color: isLive ? const Color(0xFF30D158) : const Color(0xFF00E5FF),
+                          shape: BoxShape.circle,
+                        ),
+                      ),
+                      const SizedBox(width: 4),
+                      Text(
+                        isLive ? "LIVE STREAM" : "AUTONOMOUS",
+                        style: TextStyle(
+                          color: isLive ? const Color(0xFF30D158) : const Color(0xFF00E5FF),
+                          fontSize: 9,
+                          fontWeight: FontWeight.w800,
+                          letterSpacing: 0.2,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              );
+            },
           ),
         ],
       ),

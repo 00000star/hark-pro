@@ -1,4 +1,6 @@
 import 'package:flutter/material.dart';
+import 'sdui_schema.dart';
+export 'sdui_schema.dart';
 
 enum TaskStatus {
   idle,
@@ -129,6 +131,7 @@ class ChatMessage {
   final DateTime timestamp;
   final HarkTask? spawnedTask;
   final String? dynamicPanelType;
+  final HarkRemoteWidget? remoteWidget;
 
   const ChatMessage({
     required this.id,
@@ -137,6 +140,7 @@ class ChatMessage {
     required this.timestamp,
     this.spawnedTask,
     this.dynamicPanelType,
+    this.remoteWidget,
   });
 }
 
