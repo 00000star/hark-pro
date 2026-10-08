@@ -1,0 +1,26 @@
+name: hark_pro_mobile
+description: "Hark Pro Apple-grade mobile client with Living Sky shader and live PiP computer view."
+publish_to: "none"
+version: 1.0.0+1
+
+environment:
+  sdk: ">=3.0.0 <4.0.0"
+
+dependencies:
+  flutter:
+    sdk: flutter
+  flutter_shaders: ^0.1.2
+  web_socket_channel: ^2.4.1
+  http: ^1.2.0
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^3.0.0
+
+flutter:
+  uses-material-design: true
+  assets:
+    - shaders/atmosphere.frag
+  shaders:
+    - shaders/atmosphere.frag
