@@ -20,7 +20,5 @@ dev_dependencies:
 
 flutter:
   uses-material-design: true
-  assets:
-    - shaders/atmosphere.frag
   shaders:
     - shaders/atmosphere.frag

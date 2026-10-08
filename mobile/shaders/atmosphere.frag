@@ -1,5 +1,5 @@
-// GLSL Fragment Shader: Living Atmosphere Rayleigh & Mie Scattering
-// Designed by Abidur Chowdhury for Hark Pro living sky simulation
+#include <flutter/runtime_effect.glsl>
+
 precision highp float;
 
 uniform vec2 u_resolution;
@@ -7,6 +7,8 @@ uniform float u_time;
 uniform vec2 u_sun_pos;        // Normalized solar elevation and azimuth
 uniform float u_cloud_cover;   // Cloud coverage % (0.0 to 1.0 from weather API)
 uniform float u_haze_density;  // Aerosol / Mie particulate density
+
+out vec4 fragColor;
 
 // 3D Simplex noise for organic volumetric cloud simulation
 vec3 mod289(vec3 x) { return x - floor(x * (1.0 / 289.0)) * 289.0; }
@@ -55,7 +57,7 @@ float snoise(vec3 v) {
 }
 
 void main() {
-    vec2 uv = gl_FragCoord.xy / u_resolution.xy;
+    vec2 uv = FlutterFragCoord().xy / u_resolution.xy;
     float zenith_angle = uv.y;
 
     // Rayleigh scattering: blue-shifted zenith, warm horizon
@@ -71,5 +73,5 @@ void main() {
     clouds = smoothstep(1.0 - u_cloud_cover, 1.0, clouds);
 
     vec3 final_color = mix(rayleigh_sky + mie_sun, vec3(0.85, 0.88, 0.92), clouds * 0.75);
-    gl_FragColor = vec4(final_color, 1.0);
+    fragColor = vec4(final_color, 1.0);
 }
