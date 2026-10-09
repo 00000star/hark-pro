@@ -28,8 +28,20 @@ jobs:
     - name: Scaffold Android platform if missing
       run: |
         if [ ! -d "android" ]; then
-          flutter create --platforms=android .
+          flutter create --org com.antigravity --project-name hark_pro_mobile --platforms=android .
         fi
+        for f in android/app/build.gradle android/app/build.gradle.kts; do
+          if [ -f "$f" ]; then
+            sed -i 's/applicationId = "[^"]*"/applicationId = "com.antigravity.hark"/g' "$f"
+            sed -i 's/applicationId "[^"]*"/applicationId "com.antigravity.hark"/g' "$f"
+            sed -i 's/compileSdk = .*/compileSdk = 35/g' "$f"
+            sed -i 's/compileSdkVersion .*/compileSdkVersion 35/g' "$f"
+            sed -i 's/targetSdk = .*/targetSdk = 35/g' "$f"
+            sed -i 's/targetSdkVersion .*/targetSdkVersion 35/g' "$f"
+            sed -i 's/minSdk = .*/minSdk = 24/g' "$f"
+            sed -i 's/minSdkVersion .*/minSdkVersion 24/g' "$f"
+          fi
+        done
 
     - name: Install Flutter dependencies
       run: flutter pub get
