@@ -73,13 +73,14 @@ Python 3.10+ is required.
 
 ```bash
 # Clone or navigate to the repository
-cd /sdcard/Antigravity_Projects/hark_agent
+cd hark_agent
 
-# Install Python dependencies
-pip install -r requirements.txt
+# Create virtual environment & install Python dependencies
+uv venv .venv
+uv pip install --python .venv/bin/python -r requirements.txt
 
-# Install Playwright browser binaries
-playwright install chromium
+# (Optional) Install Playwright browser binaries
+.venv/bin/playwright install chromium
 ```
 
 ### 2. Run Direct CLI Task
@@ -87,7 +88,7 @@ playwright install chromium
 To run an autonomous task directly in headless mode:
 
 ```bash
-python3 main.py --task "Search the latest news on Hacker News"
+.venv/bin/python main.py --task "Pay electric bill"
 ```
 
 ### 3. Run FastAPI Streaming Server
@@ -95,7 +96,7 @@ python3 main.py --task "Search the latest news on Hacker News"
 Start the API and live streaming server:
 
 ```bash
-python3 main.py --host 0.0.0.0 --port 8000
+.venv/bin/python main.py --host 0.0.0.0 --port 8000
 ```
 
 Once running:
@@ -139,10 +140,14 @@ http://localhost:8000/stream/video
 
 | Method | Endpoint | Description | Request Body / Parameters |
 |---|---|---|---|
-| `POST` | `/api/task` | Launch an autonomous agent task | `{"task": "Search for AI models", "max_steps": 10}` |
+| `GET` | `/health` | Service liveness & version check | None |
+| `POST` | `/api/task` | Launch an autonomous agent task & compile SDUI contract | `{"task": "Pay electric bill", "max_steps": 10}` |
 | `POST` | `/api/task/pause` | Pause current execution | None |
 | `POST` | `/api/task/resume` | Resume paused execution | None |
-| `GET` | `/api/task/status` | Current status, running state, and cursor | None |
+| `POST` | `/api/task/abort` | Abort running task | None |
+| `POST` | `/api/task/macro` | Execute speculative macro-action batch | `{"plan_name": "...", "steps": [...], "expected_outcome": "..."}` |
+| `POST` | `/api/sdui/compile` | Compile prompt into declarative SDUI contract | `{"prompt": "Check my flight"}` |
+| `GET` | `/api/task/status` | Current status, running state, and pixel/normalized cursor | None |
 | `GET` | `/api/task/logs` | Fetch recent execution logs | None |
 | `GET` | `/stream/video` | MJPEG video stream of the virtual desktop | HTTP Multipart Stream |
 

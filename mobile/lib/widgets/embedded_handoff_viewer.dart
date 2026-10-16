@@ -98,10 +98,22 @@ class _EmbeddedHandoffViewerState extends State<EmbeddedHandoffViewer>
             if (frame.thought.isNotEmpty) {
               _liveStreamThought = frame.thought;
             }
+            if (frame.status == 'executing_step') {
+              _activeStepIndex = frame.activeStep
+                  .clamp(0, math.max(0, widget.activeTask.steps.length - 1));
+            }
             if (frame.isMouseDown && !_isClicking) {
               _triggerClickAtTarget();
             }
           });
+          if (frame.status == 'completed') {
+            final updated = widget.activeTask.copyWith(
+              status: TaskStatus.completed,
+              progress: 1.0,
+              currentStepIndex: widget.activeTask.steps.length,
+            );
+            widget.onTaskStatusChanged?.call(updated);
+          }
         }
       }
     });

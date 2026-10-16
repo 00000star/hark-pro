@@ -148,6 +148,25 @@ class HarkApiService {
     _wsChannel = null;
   }
 
+  double _normalizeCoord(
+    Map<String, dynamic> payload,
+    String normKey,
+    String rawKey,
+    double viewportMax,
+    double fallback,
+  ) {
+    final normVal = payload[normKey];
+    if (normVal is num) {
+      return normVal.toDouble().clamp(0.0, 1.0);
+    }
+    final rawVal = payload[rawKey];
+    if (rawVal is num) {
+      final d = rawVal.toDouble();
+      return (d > 1.0 ? d / viewportMax : d).clamp(0.0, 1.0);
+    }
+    return fallback;
+  }
+
   void _handleLiveTelemetryMessage(dynamic raw) {
     try {
       final data = jsonDecode(raw.toString()) as Map<String, dynamic>;
@@ -156,8 +175,8 @@ class HarkApiService {
 
       if (event == 'cursor_position') {
         final frame = HarkTelemetryFrame(
-          cursorX: (payload['x'] as num?)?.toDouble() ?? 0.5,
-          cursorY: (payload['y'] as num?)?.toDouble() ?? 0.5,
+          cursorX: _normalizeCoord(payload, 'norm_x', 'x', 1280.0, 0.5),
+          cursorY: _normalizeCoord(payload, 'norm_y', 'y', 800.0, 0.5),
           isMouseDown: payload['is_mouse_down'] as bool? ?? false,
           status: 'live_stream',
           timestamp: DateTime.now().millisecondsSinceEpoch,
@@ -165,18 +184,48 @@ class HarkApiService {
         _telemetryController.add(frame);
       } else if (event == 'action_start') {
         final thought = payload['thought']?.toString() ?? '';
+        final stepIdx = (payload['active_step'] as num?)?.toInt() ?? 0;
         final frame = HarkTelemetryFrame(
-          cursorX: (payload['x'] as num?)?.toDouble() ?? 0.5,
-          cursorY: (payload['y'] as num?)?.toDouble() ?? 0.5,
+          cursorX: _normalizeCoord(payload, 'norm_x', 'x', 1280.0, 0.5),
+          cursorY: _normalizeCoord(payload, 'norm_y', 'y', 800.0, 0.5),
           thought: thought,
+          activeStep: stepIdx,
+          domSelector: payload['dom_selector']?.toString() ?? '',
           status: 'executing_step',
           timestamp: DateTime.now().millisecondsSinceEpoch,
         );
         _telemetryController.add(frame);
+        if (_currentRunningTask != null) {
+          final totalSteps = math.max(1, _currentRunningTask!.steps.length);
+          _currentRunningTask!.currentStepIndex =
+              stepIdx.clamp(0, totalSteps - 1);
+          _currentRunningTask!.progress =
+              ((stepIdx + 1) / totalSteps).clamp(0.0, 0.95);
+          _taskUpdateController.add(_currentRunningTask!);
+        }
+      } else if (event == 'remote_widget') {
+        final remoteWidget = HarkRemoteWidget.fromJson(payload);
+        _remoteWidgetController.add(remoteWidget);
       } else if (event == 'task_finished') {
         if (_currentRunningTask != null) {
           _currentRunningTask!.status = TaskStatus.completed;
           _currentRunningTask!.progress = 1.0;
+          _taskUpdateController.add(_currentRunningTask!);
+        }
+        _telemetryController.add(
+          HarkTelemetryFrame(
+            cursorX: 0.5,
+            cursorY: 0.5,
+            thought: payload['result']?.toString() ??
+                'Task completed successfully in Hark Secure Sandbox.',
+            status: 'completed',
+            timestamp: DateTime.now().millisecondsSinceEpoch,
+          ),
+        );
+      } else if (event == 'task_aborted') {
+        if (_currentRunningTask != null) {
+          _currentRunningTask!.status = TaskStatus.idle;
+          _currentRunningTask!.progress = 0.0;
           _taskUpdateController.add(_currentRunningTask!);
         }
       }
@@ -203,6 +252,17 @@ class HarkApiService {
         if (response.statusCode == 200) {
           task.status = TaskStatus.running;
           _taskUpdateController.add(task);
+          try {
+            final decoded = jsonDecode(response.body) as Map<String, dynamic>;
+            if (decoded['sdui_widget'] is Map<String, dynamic>) {
+              _remoteWidgetController.add(
+                HarkRemoteWidget.fromJson(
+                  decoded['sdui_widget'] as Map<String, dynamic>,
+                ),
+              );
+              return task;
+            }
+          } catch (_) {}
           _emitMatchingRemoteWidget(lower);
           return task;
         }
@@ -426,7 +486,7 @@ class HarkApiService {
     }
     if (connectionStatus.value == HarkApiMode.online_live) {
       try {
-        await http.post(Uri.parse('$_baseUrl/api/task/pause')).timeout(const Duration(milliseconds: 1000));
+        await http.post(Uri.parse('$_baseUrl/api/task/abort')).timeout(const Duration(milliseconds: 1000));
       } catch (_) {}
     }
   }

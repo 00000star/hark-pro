@@ -1,8 +1,18 @@
 #!/bin/bash
 set -e
 
-PROJECT_DIR="/sdcard/Antigravity_Projects/hark_agent"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PROJECT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 cd "$PROJECT_DIR"
+
+if [ -d "/sdcard/Download" ] && [ -w "/sdcard/Download" ]; then
+    OUT_DIR="/sdcard/Download"
+elif [ -d "$HOME/Downloads" ]; then
+    OUT_DIR="$HOME/Downloads"
+else
+    OUT_DIR="$PROJECT_DIR/dist"
+    mkdir -p "$OUT_DIR"
+fi
 
 echo "=== 1. Authenticating GitHub CLI ==="
 if ! gh auth status &>/dev/null; then
@@ -23,7 +33,6 @@ git add .
 git commit -m "feat: complete Hark Pro stack with CI/CD" 2>/dev/null || true
 
 echo "=== 3. Pushing to GitHub ==="
-# Try creating repo if it doesn't exist, otherwise push to existing
 gh repo create hark-pro --public --source=. --remote=origin --push 2>/dev/null || git push -u origin main --force 2>/dev/null || true
 
 echo "=== 4. Checking Workflow Status ==="
@@ -36,16 +45,16 @@ if [ -n "$RUN_ID" ] && [ "$RUN_ID" != "null" ]; then
     gh run watch "$RUN_ID" --exit-status || true
 
     echo "=== 5. Downloading APK Artifact ==="
-    mkdir -p /sdcard/Download/hark_apk_tmp
-    rm -rf /sdcard/Download/hark_apk_tmp/*
-    gh run download "$RUN_ID" --name HarkPro-Release-APK --dir /sdcard/Download/hark_apk_tmp/ 2>/dev/null || true
-    
-    # Locate downloaded apk and copy to standard destination
-    APK_FILE=$(find /sdcard/Download/hark_apk_tmp -name "*.apk" -type f | head -n 1)
+    TMP_DIR="$OUT_DIR/hark_apk_tmp"
+    mkdir -p "$TMP_DIR"
+    rm -rf "$TMP_DIR"/*
+    gh run download "$RUN_ID" --name HarkPro-Release-APK --dir "$TMP_DIR" 2>/dev/null || true
+
+    APK_FILE=$(find "$TMP_DIR" -name "*.apk" -type f | head -n 1)
     if [ -n "$APK_FILE" ]; then
-        cp "$APK_FILE" /sdcard/Download/HarkPro.apk 2>/dev/null || true
-        echo "SUCCESS: APK saved to /sdcard/Download/HarkPro.apk"
-        ls -la /sdcard/Download/HarkPro.apk
+        cp "$APK_FILE" "$OUT_DIR/HarkPro.apk" 2>/dev/null || true
+        echo "SUCCESS: APK saved to $OUT_DIR/HarkPro.apk"
+        ls -la "$OUT_DIR/HarkPro.apk"
     fi
 else
     echo "Workflow queued. You can also view progress at https://github.com/$(gh api user -q .login 2>/dev/null || echo 'user')/hark-pro/actions"

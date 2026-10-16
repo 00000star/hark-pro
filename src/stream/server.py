@@ -2,19 +2,23 @@
 FastAPI Server providing:
 1. /ws/telemetry: Live WebSocket streaming of cursor coordinates, keystrokes, and state.
 2. /stream/video: Multipart MJPEG virtual desktop live feed.
-3. /api/task: REST lifecycle management endpoints (submit, pause, resume, logs).
+3. /api/task: REST lifecycle management endpoints (submit, pause, resume, abort, status, logs).
+4. /api/sdui/compile: Server-Driven UI contract compiler endpoint.
 """
 
 from __future__ import annotations
 
 import asyncio
-from typing import Any, Dict, List, Set
+from contextlib import asynccontextmanager
+from typing import Any, Dict, List, Optional, Set
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel
 
 from src.agent.action_engine import ActionEngine
+from src.agent.sdui_engine import SDUICompiler
+from src.agent.speculative_planner import MacroPlan
 from src.sandbox.browser import BrowserController
 
 
@@ -23,8 +27,37 @@ class TaskRequest(BaseModel):
     max_steps: int = 10
 
 
-def create_app(browser: BrowserController, engine: ActionEngine) -> FastAPI:
-    app = FastAPI(title="Hark AI Computer-Use Agent", version="1.0.0")
+class SDUICompileRequest(BaseModel):
+    prompt: str
+
+
+class ModelSelectRequest(BaseModel):
+    provider: str
+    model_name: Optional[str] = None
+    api_key: Optional[str] = None
+    base_url: Optional[str] = None
+
+
+def create_app(
+    browser: Optional[BrowserController] = None,
+    engine: Optional[ActionEngine] = None,
+) -> FastAPI:
+    browser_instance = browser or BrowserController(width=1280, height=800, headless=True)
+    engine_instance = engine or ActionEngine(browser=browser_instance)
+
+    @asynccontextmanager
+    async def lifespan(_app: FastAPI):
+        await browser_instance.start()
+        try:
+            yield
+        finally:
+            await browser_instance.close()
+
+    app = FastAPI(
+        title="Hark AI Computer-Use Agent",
+        version="2.0.0",
+        lifespan=lifespan,
+    )
 
     app.add_middleware(
         CORSMiddleware,
@@ -39,18 +72,26 @@ def create_app(browser: BrowserController, engine: ActionEngine) -> FastAPI:
 
     def telemetry_callback(payload: Dict[str, Any]) -> None:
         execution_logs.append(payload)
-        asyncio.create_task(broadcast_telemetry(payload))
+        try:
+            loop = asyncio.get_running_loop()
+            loop.create_task(broadcast_telemetry(payload))
+        except RuntimeError:
+            pass
 
-    engine.set_callback(telemetry_callback)
+    engine_instance.set_callback(telemetry_callback)
 
     async def broadcast_telemetry(data: Dict[str, Any]) -> None:
         disconnected = set()
-        for ws in active_websockets:
+        for ws in list(active_websockets):
             try:
                 await ws.send_json(data)
             except Exception:
                 disconnected.add(ws)
         active_websockets.difference_update(disconnected)
+
+    @app.get("/health")
+    async def health_check():
+        return {"status": "ok", "service": "hark-agent", "version": "2.0.0"}
 
     @app.websocket("/ws/telemetry")
     async def websocket_telemetry(websocket: WebSocket) -> None:
@@ -58,12 +99,15 @@ def create_app(browser: BrowserController, engine: ActionEngine) -> FastAPI:
         active_websockets.add(websocket)
         try:
             while True:
+                nx, ny = browser_instance.norm_cursor
                 cursor_event = {
                     "event": "cursor_position",
                     "data": {
-                        "x": browser.cursor_x,
-                        "y": browser.cursor_y,
-                        "is_mouse_down": browser.is_mouse_down,
+                        "x": browser_instance.cursor_x,
+                        "y": browser_instance.cursor_y,
+                        "norm_x": nx,
+                        "norm_y": ny,
+                        "is_mouse_down": browser_instance.is_mouse_down,
                     },
                 }
                 await websocket.send_json(cursor_event)
@@ -76,7 +120,7 @@ def create_app(browser: BrowserController, engine: ActionEngine) -> FastAPI:
     async def video_frame_generator():
         while True:
             try:
-                frame_bytes = await browser.capture_screen(with_cursor=True)
+                frame_bytes = await browser_instance.capture_screen(with_cursor=True)
                 yield (
                     b"--frame\r\n"
                     b"Content-Type: image/jpeg\r\n\r\n" + frame_bytes + b"\r\n"
@@ -94,29 +138,71 @@ def create_app(browser: BrowserController, engine: ActionEngine) -> FastAPI:
 
     @app.post("/api/task")
     async def start_task(req: TaskRequest):
-        if engine.is_running:
-            return JSONResponse(status_code=400, content={"error": "Agent is already running a task."})
+        if engine_instance.is_running:
+            engine_instance.abort()
+            await asyncio.sleep(0.1)
 
-        asyncio.create_task(engine.run_task(req.task, max_steps=req.max_steps))
-        return {"status": "started", "task": req.task}
+        sdui_widget = SDUICompiler.compile_for_prompt(req.task)
+        asyncio.create_task(engine_instance.run_task(req.task, max_steps=req.max_steps))
+        return {
+            "status": "started",
+            "task": req.task,
+            "sdui_widget": sdui_widget,
+        }
 
     @app.post("/api/task/pause")
     async def pause_task():
-        engine.is_paused = True
+        engine_instance.is_paused = True
         return {"status": "paused"}
 
     @app.post("/api/task/resume")
     async def resume_task():
-        engine.is_paused = False
+        engine_instance.is_paused = False
         return {"status": "resumed"}
+
+    @app.post("/api/task/abort")
+    async def abort_task():
+        engine_instance.abort()
+        return {"status": "aborted"}
+
+    @app.post("/api/task/macro")
+    async def execute_macro(plan: MacroPlan):
+        result = await engine_instance.execute_macro_plan(plan)
+        return result
+
+    @app.post("/api/sdui/compile")
+    async def compile_sdui(req: SDUICompileRequest):
+        return SDUICompiler.compile_for_prompt(req.prompt)
+
+    @app.get("/api/models")
+    async def list_models():
+        return engine_instance.get_model_catalog()
+
+    @app.post("/api/models/select")
+    async def select_model(req: ModelSelectRequest):
+        active = engine_instance.configure_model(
+            provider=req.provider,
+            model_name=req.model_name,
+            api_key=req.api_key,
+            base_url=req.base_url,
+        )
+        return {"status": "updated", "active": active}
 
     @app.get("/api/task/status")
     async def get_status():
+        nx, ny = browser_instance.norm_cursor
         return {
-            "is_running": engine.is_running,
-            "is_paused": engine.is_paused,
-            "cursor": {"x": browser.cursor_x, "y": browser.cursor_y},
-            "steps_completed": len(engine.history),
+            "is_running": engine_instance.is_running,
+            "is_paused": engine_instance.is_paused,
+            "current_task": engine_instance.current_task,
+            "model": engine_instance.get_active_model_info(),
+            "cursor": {
+                "x": browser_instance.cursor_x,
+                "y": browser_instance.cursor_y,
+                "norm_x": nx,
+                "norm_y": ny,
+            },
+            "steps_completed": len(engine_instance.history),
         }
 
     @app.get("/api/task/logs")
@@ -124,3 +210,11 @@ def create_app(browser: BrowserController, engine: ActionEngine) -> FastAPI:
         return {"logs": execution_logs[-100:]}
 
     return app
+
+
+app = create_app()
+
+if __name__ == "__main__":
+    import uvicorn
+
+    uvicorn.run(app, host="0.0.0.0", port=8000, log_level="info")

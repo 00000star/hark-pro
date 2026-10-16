@@ -1,0 +1,33 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+.venv/
+venv/
+env/
+.pytest_cache/
+*.egg-info/
+dist/
+build/
+.hark_memory.json
+
+# Flutter / Dart / Android
+mobile/.dart_tool/
+mobile/.packages
+mobile/build/
+mobile/.flutter-plugins
+mobile/.flutter-plugins-dependencies
+mobile/android/.gradle/
+mobile/android/local.properties
+
+# OS / IDE
+.DS_Store
+.idea/
+.vscode/
+*.swp
+node_modules/
+*.pyc
+*.keystore
+*.db
+.env
+.env.*

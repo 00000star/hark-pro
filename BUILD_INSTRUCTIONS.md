@@ -9,9 +9,9 @@ This document describes how to build, run, and distribute the **Hark Pro** mobil
 Automated workflows are configured to build the release Android APK in the cloud with zero local Android SDK configuration required.
 
 ### Workflow Files
-- **Root Repository Workflow**: [`.github/workflows/build_apk.yml`](file:///sdcard/Antigravity_Projects/hark_agent/.github/workflows/build_apk.yml)  
+- **Root Repository Workflow**: [`.github/workflows/build_apk.yml`](.github/workflows/build_apk.yml)  
   Used when cloning the top-level `hark_agent` monorepo. Configured to build from the `mobile/` directory.
-- **Standalone Mobile Subproject Workflow**: [`mobile/.github/workflows/build_apk.yml`](file:///sdcard/Antigravity_Projects/hark_agent/mobile/.github/workflows/build_apk.yml)  
+- **Standalone Mobile Subproject Workflow**: [`mobile/.github/workflows/build_apk.yml`](mobile/.github/workflows/build_apk.yml)  
   Used if the `mobile` folder is pushed or mirrored as a dedicated repository.
 
 ### What the Pipeline Does

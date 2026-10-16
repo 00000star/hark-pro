@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import '../models/hark_models.dart';
+import '../services/hark_api_service.dart';
 import '../widgets/living_sky_background.dart';
 import '../widgets/embedded_handoff_viewer.dart';
 import '../widgets/action_button_card.dart';
@@ -40,7 +41,7 @@ class _HarkHomeScreenState extends State<HarkHomeScreen> {
     super.didUpdateWidget(oldWidget);
     if (widget.externalActiveTask != null &&
         widget.externalActiveTask!.id != _activeTask.id) {
-      _executeTask(widget.externalActiveTask!);
+      _executeTask(widget.externalActiveTask!, fromChat: true);
     }
   }
 
@@ -50,12 +51,18 @@ class _HarkHomeScreenState extends State<HarkHomeScreen> {
     super.dispose();
   }
 
-  void _executeTask(HarkTask task) {
+  void _executeTask(HarkTask task, {bool fromChat = false}) {
     setState(() {
       _activeTask = task;
       _activeTask.status = TaskStatus.running;
       _isTaskRunning = true;
     });
+
+    if (!fromChat &&
+        HarkApiService.instance.connectionStatus.value ==
+            HarkApiMode.online_live) {
+      HarkApiService.instance.submitTask(task.title);
+    }
 
     // Scroll smoothly to top to watch Handoff viewer
     if (_scrollController.hasClients) {
