@@ -42,6 +42,8 @@ class _EmbeddedHandoffViewerState extends State<EmbeddedHandoffViewer>
   bool _isClicking = false;
   bool _isUserTakeover = false;
   bool _isPaused = false;
+  bool _isApprovalRequired = false;
+  String? _pendingApprovalThought;
   int _activeStepIndex = 0;
   Timer? _stepExecutionTimer;
   Offset? _userTouchOffset;
@@ -101,6 +103,14 @@ class _EmbeddedHandoffViewerState extends State<EmbeddedHandoffViewer>
             if (frame.status == 'executing_step') {
               _activeStepIndex = frame.activeStep
                   .clamp(0, math.max(0, widget.activeTask.steps.length - 1));
+            }
+            if (frame.requiresApproval || frame.status == 'approval_required') {
+              _isApprovalRequired = true;
+              _pendingApprovalThought = frame.thought;
+            } else if (frame.status == 'running' ||
+                frame.status == 'completed' ||
+                frame.status == 'aborted') {
+              _isApprovalRequired = false;
             }
             if (frame.isMouseDown && !_isClicking) {
               _triggerClickAtTarget();
@@ -253,7 +263,9 @@ class _EmbeddedHandoffViewerState extends State<EmbeddedHandoffViewer>
       if (_isUserTakeover) {
         _cursorController.stop();
         _stepExecutionTimer?.cancel();
+        HarkApiService.instance.sendOperatorInput(action: 'takeover_start');
       } else {
+        HarkApiService.instance.sendOperatorInput(action: 'takeover_end');
         _moveToStep(_activeStepIndex);
       }
     });
@@ -328,15 +340,46 @@ class _EmbeddedHandoffViewerState extends State<EmbeddedHandoffViewer>
               children: [
                 // Simulated Web Page Content
                 Positioned.fill(
-                  child: GestureDetector(
-                    onTapDown: _isUserTakeover
-                        ? (details) {
-                            setState(() {
-                              _userTouchOffset = details.localPosition;
-                            });
-                          }
-                        : null,
-                    child: _buildWebPageSimulation(context),
+                  child: LayoutBuilder(
+                    builder: (context, constraints) {
+                      return GestureDetector(
+                        onTapDown: _isUserTakeover
+                            ? (details) {
+                                final normX = (details.localPosition.dx / constraints.maxWidth).clamp(0.0, 1.0);
+                                final normY = (details.localPosition.dy / constraints.maxHeight).clamp(0.0, 1.0);
+                                setState(() {
+                                  _userTouchOffset = details.localPosition;
+                                });
+                                HarkApiService.instance.sendOperatorInput(
+                                  action: 'click',
+                                  normX: normX,
+                                  normY: normY,
+                                );
+                              }
+                            : null,
+                        onPanUpdate: _isUserTakeover
+                            ? (details) {
+                                setState(() {
+                                  _userTouchOffset = details.localPosition;
+                                });
+                              }
+                            : null,
+                        onPanEnd: _isUserTakeover
+                            ? (details) {
+                                if (_userTouchOffset != null) {
+                                  final normX = (_userTouchOffset!.dx / constraints.maxWidth).clamp(0.0, 1.0);
+                                  final normY = (_userTouchOffset!.dy / constraints.maxHeight).clamp(0.0, 1.0);
+                                  HarkApiService.instance.sendOperatorInput(
+                                    action: 'click',
+                                    normX: normX,
+                                    normY: normY,
+                                  );
+                                }
+                              }
+                            : null,
+                        child: _buildWebPageSimulation(context),
+                      );
+                    },
                   ),
                 ),
 
@@ -404,6 +447,91 @@ class _EmbeddedHandoffViewerState extends State<EmbeddedHandoffViewer>
                               color: Colors.white,
                               fontSize: 11,
                               fontWeight: FontWeight.bold,
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ),
+
+                // High-Stakes Approval Required Modal / Banner
+                if (_isApprovalRequired)
+                  Positioned(
+                    bottom: 12,
+                    left: 12,
+                    right: 12,
+                    child: Container(
+                      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+                      decoration: BoxDecoration(
+                        gradient: const LinearGradient(
+                          colors: [
+                            Color(0xFFE53935),
+                            Color(0xFFFF6D00),
+                          ],
+                        ),
+                        borderRadius: BorderRadius.circular(14),
+                        boxShadow: [
+                          BoxShadow(
+                            color: const Color(0xFFE53935).withOpacity(0.5),
+                            blurRadius: 16,
+                            offset: const Offset(0, 4),
+                          ),
+                        ],
+                      ),
+                      child: Row(
+                        children: [
+                          const Icon(Icons.shield_rounded, color: Colors.white, size: 24),
+                          const SizedBox(width: 10),
+                          Expanded(
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              mainAxisSize: MainAxisSize.min,
+                              children: [
+                                const Text(
+                                  "Operator Approval Required",
+                                  style: TextStyle(
+                                    color: Colors.white,
+                                    fontSize: 12,
+                                    fontWeight: FontWeight.bold,
+                                  ),
+                                ),
+                                const SizedBox(height: 2),
+                                Text(
+                                  _pendingApprovalThought ??
+                                      "Action requires explicit confirmation.",
+                                  style: const TextStyle(
+                                    color: Colors.white70,
+                                    fontSize: 10,
+                                  ),
+                                  maxLines: 2,
+                                  overflow: TextOverflow.ellipsis,
+                                ),
+                              ],
+                            ),
+                          ),
+                          const SizedBox(width: 8),
+                          ElevatedButton(
+                            style: ElevatedButton.styleFrom(
+                              backgroundColor: Colors.white,
+                              foregroundColor: const Color(0xFFD32F2F),
+                              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+                              shape: RoundedRectangleBorder(
+                                borderRadius: BorderRadius.circular(8),
+                              ),
+                              elevation: 0,
+                            ),
+                            onPressed: () async {
+                              setState(() {
+                                _isApprovalRequired = false;
+                              });
+                              await HarkApiService.instance.approvePendingAction();
+                            },
+                            child: const Text(
+                              "Authorize",
+                              style: TextStyle(
+                                fontWeight: FontWeight.bold,
+                                fontSize: 11,
+                              ),
                             ),
                           ),
                         ],

@@ -25,6 +25,7 @@ class _ChatAgentScreenState extends State<ChatAgentScreen>
 
   bool _isListeningVoice = false;
   bool _isAiTyping = false;
+  String _activeProvider = "simulator";
   late AnimationController _micPulseController;
   StreamSubscription<HarkRemoteWidget>? _widgetSub;
 
@@ -44,6 +45,16 @@ class _ChatAgentScreenState extends State<ChatAgentScreen>
       vsync: this,
       duration: const Duration(milliseconds: 900),
     )..repeat(reverse: true);
+
+    // Probe active backend model
+    HarkApiService.instance.getBackendModels().then((data) {
+      if (mounted && data['active'] is Map) {
+        final active = data['active'] as Map<String, dynamic>;
+        setState(() {
+          _activeProvider = active['provider']?.toString() ?? 'simulator';
+        });
+      }
+    });
 
     // Listen to SDUI remote widget emissions from HarkApiService
     _widgetSub = HarkApiService.instance.remoteWidgetStream.listen((remoteWidget) {
@@ -258,36 +269,34 @@ class _ChatAgentScreenState extends State<ChatAgentScreen>
               ),
             ],
           ),
-          // Dual-mode connection indicator
-          ValueListenableBuilder<HarkApiMode>(
-            valueListenable: HarkApiService.instance.connectionStatus,
-            builder: (context, mode, _) {
-              final isLive = mode == HarkApiMode.online_live;
-              return GestureDetector(
-                onTap: () => HarkApiService.instance.checkBackendHealth(),
+          // Model switcher pill + Dual-mode connection indicator
+          Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              GestureDetector(
+                onTap: _showModelPickerSheet,
                 child: Container(
                   padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
                   decoration: BoxDecoration(
-                    color: (isLive ? const Color(0xFF30D158) : const Color(0xFF00E5FF))
-                        .withOpacity(0.12),
+                    color: const Color(0xFF5E5CE6).withOpacity(0.18),
                     borderRadius: BorderRadius.circular(10),
                     border: Border.all(
-                      color: (isLive ? const Color(0xFF30D158) : const Color(0xFF00E5FF))
-                          .withOpacity(0.3),
+                      color: const Color(0xFF5E5CE6).withOpacity(0.4),
                     ),
                   ),
                   child: Row(
+                    mainAxisSize: MainAxisSize.min,
                     children: [
-                      Icon(
-                        isLive ? Icons.wifi_rounded : Icons.lock_outline_rounded,
-                        color: isLive ? const Color(0xFF30D158) : const Color(0xFF00E5FF),
-                        size: 12,
+                      const Icon(
+                        Icons.psychology_rounded,
+                        color: Color(0xFF00E5FF),
+                        size: 13,
                       ),
                       const SizedBox(width: 4),
                       Text(
-                        isLive ? "STARBOY LIVE" : "Autonomous",
-                        style: TextStyle(
-                          color: isLive ? const Color(0xFF30D158) : Colors.white70,
+                        _activeProvider.toUpperCase(),
+                        style: const TextStyle(
+                          color: Colors.white,
                           fontSize: 10,
                           fontWeight: FontWeight.bold,
                         ),
@@ -295,11 +304,260 @@ class _ChatAgentScreenState extends State<ChatAgentScreen>
                     ],
                   ),
                 ),
-              );
-            },
+              ),
+              const SizedBox(width: 6),
+              ValueListenableBuilder<HarkApiMode>(
+                valueListenable: HarkApiService.instance.connectionStatus,
+                builder: (context, mode, _) {
+                  final isLive = mode == HarkApiMode.online_live;
+                  return GestureDetector(
+                    onTap: () => HarkApiService.instance.checkBackendHealth(),
+                    child: Container(
+                      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                      decoration: BoxDecoration(
+                        color: (isLive ? const Color(0xFF30D158) : const Color(0xFF00E5FF))
+                            .withOpacity(0.12),
+                        borderRadius: BorderRadius.circular(10),
+                        border: Border.all(
+                          color: (isLive ? const Color(0xFF30D158) : const Color(0xFF00E5FF))
+                              .withOpacity(0.3),
+                        ),
+                      ),
+                      child: Row(
+                        children: [
+                          Icon(
+                            isLive ? Icons.wifi_rounded : Icons.lock_outline_rounded,
+                            color: isLive ? const Color(0xFF30D158) : const Color(0xFF00E5FF),
+                            size: 12,
+                          ),
+                          const SizedBox(width: 4),
+                          Text(
+                            isLive ? "STARBOY LIVE" : "Autonomous",
+                            style: TextStyle(
+                              color: isLive ? const Color(0xFF30D158) : Colors.white70,
+                              fontSize: 10,
+                              fontWeight: FontWeight.bold,
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  );
+                },
+              ),
+            ],
           ),
         ],
       ),
+    );
+  }
+
+  void _showModelPickerSheet() {
+    final models = [
+      {
+        'id': 'simulator',
+        'name': 'Simulator (Zero-Cost)',
+        'desc': 'Deterministic heuristic sandbox engine',
+        'badge': 'FREE',
+      },
+      {
+        'id': 'gemini',
+        'name': 'Google Gemini 2.5 Flash',
+        'desc': 'Ultra-fast native multimodal vision & tool use',
+        'badge': 'RECOMMENDED',
+      },
+      {
+        'id': 'anthropic',
+        'name': 'Claude 3.7 Sonnet',
+        'desc': 'Anthropic Computer Use API (Hark Pro parity)',
+        'badge': 'TOP VLM',
+      },
+      {
+        'id': 'openai',
+        'name': 'OpenAI GPT-4o / Dots',
+        'desc': 'High-precision GUI grounding & reasoning',
+        'badge': 'VISION',
+      },
+      {
+        'id': 'grok',
+        'name': 'xAI Grok 2 Vision',
+        'desc': 'Real-time high speed visual action engine',
+        'badge': 'FAST',
+      },
+      {
+        'id': 'nous',
+        'name': 'Nous Hermes 3',
+        'desc': 'Open-weight reasoning with SOUL.md directives',
+        'badge': 'OPEN',
+      },
+      {
+        'id': 'ollama',
+        'name': 'Ollama Local (Qwen 2.5 VL)',
+        'desc': '100% private offline edge VLM inference',
+        'badge': 'LOCAL',
+      },
+      {
+        'id': 'openrouter',
+        'name': 'OpenRouter Gateway',
+        'desc': 'Universal multi-provider failover routing',
+        'badge': 'ROUTER',
+      },
+    ];
+
+    showModalBottomSheet(
+      context: context,
+      backgroundColor: const Color(0xFF10121A),
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
+      ),
+      builder: (ctx) {
+        return Container(
+          padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 20),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Row(
+                mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                children: [
+                  const Text(
+                    "AI Action & Reasoning Engine",
+                    style: TextStyle(
+                      color: Colors.white,
+                      fontSize: 18,
+                      fontWeight: FontWeight.bold,
+                    ),
+                  ),
+                  IconButton(
+                    icon: const Icon(Icons.close, color: Colors.white54),
+                    onPressed: () => Navigator.pop(ctx),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 6),
+              const Text(
+                "Select the underlying foundation model or simulator powering browser automation.",
+                style: TextStyle(color: Colors.white54, fontSize: 12),
+              ),
+              const SizedBox(height: 16),
+              Flexible(
+                child: ListView.separated(
+                  shrinkWrap: true,
+                  itemCount: models.length,
+                  separatorBuilder: (_, __) => const SizedBox(height: 8),
+                  itemBuilder: (context, idx) {
+                    final m = models[idx];
+                    final isSelected = m['id'] == _activeProvider;
+                    return InkWell(
+                      onTap: () async {
+                        final providerId = m['id']!;
+                        setState(() {
+                          _activeProvider = providerId;
+                        });
+                        Navigator.pop(ctx);
+                        await HarkApiService.instance
+                            .selectBackendModel(provider: providerId);
+                        if (mounted) {
+                          ScaffoldMessenger.of(context).showSnackBar(
+                            SnackBar(
+                              backgroundColor: const Color(0xFF161822),
+                              content: Text(
+                                "Engine switched to ${m['name']}",
+                                style: const TextStyle(color: Colors.white),
+                              ),
+                              duration: const Duration(seconds: 2),
+                            ),
+                          );
+                        }
+                      },
+                      borderRadius: BorderRadius.circular(14),
+                      child: Container(
+                        padding: const EdgeInsets.symmetric(
+                            horizontal: 14, vertical: 12),
+                        decoration: BoxDecoration(
+                          color: isSelected
+                              ? const Color(0xFF5E5CE6).withOpacity(0.2)
+                              : const Color(0xFF161822),
+                          borderRadius: BorderRadius.circular(14),
+                          border: Border.all(
+                            color: isSelected
+                                ? const Color(0xFF5E5CE6)
+                                : Colors.white.withOpacity(0.08),
+                          ),
+                        ),
+                        child: Row(
+                          children: [
+                            Icon(
+                              isSelected
+                                  ? Icons.radio_button_checked
+                                  : Icons.radio_button_off,
+                              color: isSelected
+                                  ? const Color(0xFF00E5FF)
+                                  : Colors.white38,
+                              size: 18,
+                            ),
+                            const SizedBox(width: 12),
+                            Expanded(
+                              child: Column(
+                                crossAxisAlignment: CrossAxisAlignment.start,
+                                children: [
+                                  Row(
+                                    children: [
+                                      Text(
+                                        m['name']!,
+                                        style: const TextStyle(
+                                          color: Colors.white,
+                                          fontWeight: FontWeight.bold,
+                                          fontSize: 13,
+                                        ),
+                                      ),
+                                      const SizedBox(width: 8),
+                                      Container(
+                                        padding: const EdgeInsets.symmetric(
+                                            horizontal: 6, vertical: 2),
+                                        decoration: BoxDecoration(
+                                          color: isSelected
+                                              ? const Color(0xFF00E5FF)
+                                                  .withOpacity(0.2)
+                                              : Colors.white.withOpacity(0.06),
+                                          borderRadius:
+                                              BorderRadius.circular(6),
+                                        ),
+                                        child: Text(
+                                          m['badge']!,
+                                          style: TextStyle(
+                                            color: isSelected
+                                                ? const Color(0xFF00E5FF)
+                                                : Colors.white54,
+                                            fontSize: 9,
+                                            fontWeight: FontWeight.bold,
+                                          ),
+                                        ),
+                                      ),
+                                    ],
+                                  ),
+                                  const SizedBox(height: 2),
+                                  Text(
+                                    m['desc']!,
+                                    style: const TextStyle(
+                                      color: Colors.white54,
+                                      fontSize: 11,
+                                    ),
+                                  ),
+                                ],
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                    );
+                  },
+                ),
+              ),
+            ],
+          ),
+        );
+      },
     );
   }
 

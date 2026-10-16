@@ -533,6 +533,211 @@ class HarkApiService {
     }
   }
 
+  /// Send manual operator input (click, drag, text, scroll) for bidirectional takeover
+  Future<Map<String, dynamic>> sendOperatorInput({
+    required String action,
+    double? normX,
+    double? normY,
+    String? text,
+    double? deltaY,
+  }) async {
+    if (connectionStatus.value == HarkApiMode.online_live) {
+      try {
+        final uri = Uri.parse('$_baseUrl/api/sandbox/input');
+        final response = await http
+            .post(
+              uri,
+              headers: {'Content-Type': 'application/json'},
+              body: jsonEncode({
+                'action': action,
+                if (normX != null) 'norm_x': normX,
+                if (normY != null) 'norm_y': normY,
+                if (text != null) 'text': text,
+                if (deltaY != null) 'delta_y': deltaY,
+              }),
+            )
+            .timeout(const Duration(milliseconds: 1500));
+        if (response.statusCode == 200) {
+          return jsonDecode(response.body) as Map<String, dynamic>;
+        }
+      } catch (_) {}
+    }
+    return {
+      'status': 'applied',
+      'action': action,
+      'cursor': {'norm_x': normX ?? 0.5, 'norm_y': normY ?? 0.5},
+    };
+  }
+
+  /// Operator approves high-stakes pending action (payment, submission, checkout)
+  Future<bool> approvePendingAction() async {
+    if (connectionStatus.value == HarkApiMode.online_live) {
+      try {
+        final uri = Uri.parse('$_baseUrl/api/task/approve');
+        final response = await http
+            .post(uri)
+            .timeout(const Duration(milliseconds: 1500));
+        return response.statusCode == 200;
+      } catch (_) {}
+    }
+    _telemetryController.add(
+      HarkTelemetryFrame(
+        cursorX: 0.5,
+        cursorY: 0.5,
+        thought: 'Approved locally in offline mode.',
+        status: 'running',
+        requiresApproval: false,
+        timestamp: DateTime.now().millisecondsSinceEpoch,
+      ),
+    );
+    return true;
+  }
+
+  /// Switch the active backend model provider (Gemini, Claude, GPT, Grok, Hermes, Ollama, Simulator)
+  Future<Map<String, dynamic>> selectBackendModel({
+    required String provider,
+    String? modelName,
+    String? baseUrl,
+  }) async {
+    if (connectionStatus.value == HarkApiMode.online_live) {
+      try {
+        final uri = Uri.parse('$_baseUrl/api/models/select');
+        final response = await http
+            .post(
+              uri,
+              headers: {'Content-Type': 'application/json'},
+              body: jsonEncode({
+                'provider': provider,
+                if (modelName != null) 'model_name': modelName,
+                if (baseUrl != null) 'base_url': baseUrl,
+              }),
+            )
+            .timeout(const Duration(milliseconds: 2000));
+        if (response.statusCode == 200) {
+          return jsonDecode(response.body) as Map<String, dynamic>;
+        }
+      } catch (_) {}
+    }
+    return {
+      'status': 'offline_mock',
+      'active': {'provider': provider, 'model_name': modelName ?? 'default'},
+    };
+  }
+
+  /// Fetch list of supported backend model providers & metadata
+  Future<Map<String, dynamic>> getBackendModels() async {
+    if (connectionStatus.value == HarkApiMode.online_live) {
+      try {
+        final uri = Uri.parse('$_baseUrl/api/models');
+        final response = await http
+            .get(uri)
+            .timeout(const Duration(milliseconds: 1500));
+        if (response.statusCode == 200) {
+          return jsonDecode(response.body) as Map<String, dynamic>;
+        }
+      } catch (_) {}
+    }
+    return {
+      'active': {'provider': 'simulator', 'model_name': 'heuristic-som-v1'},
+      'providers': [
+        'simulator',
+        'gemini',
+        'anthropic',
+        'openai',
+        'grok',
+        'nous',
+        'openrouter',
+        'ollama'
+      ],
+      'descriptions': {
+        'simulator': 'Zero-cost deterministic heuristic simulator',
+        'gemini': 'Google Gemini 2.5 Flash / Pro Multimodal VLM',
+        'anthropic': 'Anthropic Claude 3.7 Sonnet Computer Use API',
+        'openai': 'OpenAI GPT-4o / Dots Cloud-Computer VLM',
+        'grok': 'xAI Grok 2 Vision',
+        'nous': 'Nous Hermes 3 Reasoning with SOUL.md system prompts',
+        'openrouter': 'Universal OpenRouter API Gateway',
+        'ollama': 'Local open-weight VLM (Qwen 2.5 VL / MiniCPM-V)',
+      }
+    };
+  }
+
+  /// Retrieve persistent memory summary & episode history
+  Future<Map<String, dynamic>> getMemorySummary() async {
+    if (connectionStatus.value == HarkApiMode.online_live) {
+      try {
+        final uri = Uri.parse('$_baseUrl/api/memory');
+        final response = await http
+            .get(uri)
+            .timeout(const Duration(milliseconds: 1500));
+        if (response.statusCode == 200) {
+          return jsonDecode(response.body) as Map<String, dynamic>;
+        }
+      } catch (_) {}
+    }
+    return {
+      'total_episodes': 0,
+      'preferences': {},
+      'vault_handles': [],
+    };
+  }
+
+  /// Save user preference to long-term memory
+  Future<bool> saveMemoryPreference(String key, dynamic value) async {
+    if (connectionStatus.value == HarkApiMode.online_live) {
+      try {
+        final uri = Uri.parse('$_baseUrl/api/memory');
+        final response = await http
+            .post(
+              uri,
+              headers: {'Content-Type': 'application/json'},
+              body: jsonEncode({'key': key, 'value': value}),
+            )
+            .timeout(const Duration(milliseconds: 1500));
+        return response.statusCode == 200;
+      } catch (_) {}
+    }
+    return true;
+  }
+
+  /// Retrieve list of opaque zero-knowledge vault handles ($VAULT:<handle>)
+  Future<List<String>> listVaultHandles() async {
+    if (connectionStatus.value == HarkApiMode.online_live) {
+      try {
+        final uri = Uri.parse('$_baseUrl/api/vault/handles');
+        final response = await http
+            .get(uri)
+            .timeout(const Duration(milliseconds: 1500));
+        if (response.statusCode == 200) {
+          final data = jsonDecode(response.body) as Map<String, dynamic>;
+          final list = data['handles'] as List<dynamic>?;
+          if (list != null) {
+            return list.map((e) => e.toString()).toList();
+          }
+        }
+      } catch (_) {}
+    }
+    return [];
+  }
+
+  /// Store a secret into the zero-knowledge vault
+  Future<bool> setVaultSecret(String handle, String secretValue) async {
+    if (connectionStatus.value == HarkApiMode.online_live) {
+      try {
+        final uri = Uri.parse('$_baseUrl/api/vault/secret');
+        final response = await http
+            .post(
+              uri,
+              headers: {'Content-Type': 'application/json'},
+              body: jsonEncode({'handle': handle, 'secret_value': secretValue}),
+            )
+            .timeout(const Duration(milliseconds: 1500));
+        return response.statusCode == 200;
+      } catch (_) {}
+    }
+    return true;
+  }
+
   void switchMode(HarkApiMode mode) {
     connectionStatus.value = mode;
     if (mode == HarkApiMode.online_live) {
