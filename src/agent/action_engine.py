@@ -13,13 +13,15 @@ from typing import Any, Callable, Dict, List, Optional
 import httpx
 from pydantic import BaseModel, Field
 
+from src.agent.memory_vault import AgentMemory, ZeroKnowledgeVault
 from src.agent.sdui_engine import SDUICompiler
 from src.agent.speculative_planner import MacroPlan, SpeculativePlanner
 from src.sandbox.browser import BrowserController, InteractiveMark
+from src.sandbox.dual_stream import DualStreamGrounding
 
 
 class AgentAction(BaseModel):
-    action: str = Field(description="Action name: click, type, scroll, wait, finish, navigate")
+    action: str = Field(description="Action name: click, type, scroll, wait, finish, navigate, macro")
     mark_id: Optional[int] = Field(default=None, description="Set-of-Marks ID of the targeted element")
     x: Optional[float] = Field(default=None, description="Direct X coordinate if not targeting mark")
     y: Optional[float] = Field(default=None, description="Direct Y coordinate if not targeting mark")
@@ -31,6 +33,14 @@ class AgentAction(BaseModel):
     url: Optional[str] = Field(default=None, description="Navigation target URL")
     thought: Optional[str] = Field(default="", description="Chain-of-thought rationale")
     result: Optional[str] = Field(default=None, description="Final output answer if finish")
+    macro_steps: Optional[List[Dict[str, Any]]] = Field(
+        default=None,
+        description="Speculative macro batch of atomic steps to execute in a single turn",
+    )
+    requires_approval: bool = Field(
+        default=False,
+        description="True when action executes a financial, checkout, or high-stakes commitment",
+    )
 
 
 SUPPORTED_MODEL_PROFILES: Dict[str, Dict[str, Any]] = {
@@ -126,13 +136,18 @@ class ActionEngine:
         provider: Optional[str] = None,
         base_url: Optional[str] = None,
         on_step_callback: Optional[Callable[[Dict[str, Any]], None]] = None,
+        memory: Optional[AgentMemory] = None,
     ):
         self.browser = browser
         self.on_step_callback = on_step_callback
         self.sdui_compiler = SDUICompiler()
         self.speculative_planner = SpeculativePlanner(browser)
+        self.memory = memory or AgentMemory()
+        self.vault: ZeroKnowledgeVault = browser.vault
         self.is_paused = False
         self.is_running = False
+        self.require_operator_approval = False
+        self.pending_approval = False
         self.current_task: Optional[str] = None
         self.history: List[Dict[str, Any]] = []
 
@@ -229,10 +244,18 @@ class ActionEngine:
         if self.on_step_callback:
             self.on_step_callback({"event": event_type, "data": data})
 
+    def approve_pending(self) -> Dict[str, Any]:
+        """Approves a pending high-stakes action gated by operator/biometric auth."""
+        self.pending_approval = False
+        self.is_paused = False
+        self.emit("approval_granted", {"task": self.current_task})
+        return {"status": "approved", "task": self.current_task}
+
     def abort(self) -> None:
         """Aborts any currently running or paused task."""
         self.is_running = False
         self.is_paused = False
+        self.pending_approval = False
         self.emit("task_aborted", {"task": self.current_task})
 
     @staticmethod
@@ -261,9 +284,17 @@ class ActionEngine:
 
         b64_image = base64.b64encode(tagged_image_bytes).decode("utf-8")
         elements_summary = "\n".join(
-            [f"ID [{m.mark_id}] <{m.tag_name}> '{m.text}' at ({m.x}, {m.y})" for m in marks[:40]]
+            [
+                f"ID [{m.mark_id}] <{m.tag_name} role='{m.role}' sel='{m.selector}'> '{m.text}' at ({m.x}, {m.y})"
+                for m in marks[:40]
+            ]
         )
-        prompt_text = f"Task: {task}\nInteractive Elements:\n{elements_summary}"
+        memory_context = self.memory.get_context_prompt(self.vault.list_handles())
+        prompt_text = (
+            f"Task: {task}\n"
+            f"{memory_context}\n"
+            f"Interactive Elements (Dual-Stream SoM + AXTree):\n{elements_summary}"
+        )
 
         try:
             async with httpx.AsyncClient(timeout=30.0) as client:
@@ -371,7 +402,7 @@ class ActionEngine:
             return await self._simulate_action(task, marks)
 
     async def _simulate_action(self, task: str, marks: List[InteractiveMark]) -> AgentAction:
-        """Deterministic fallback simulator for out-of-the-box demo execution."""
+        """Deterministic fallback simulator with Speculative Macro Batching and $VAULT injection."""
         step_count = len(self.history)
         lower_task = task.lower()
         if step_count == 0:
@@ -380,12 +411,20 @@ class ActionEngine:
                 None,
             )
             if search_input:
+                typed_payload = task
+                if any(k in lower_task for k in ("bill", "pge", "electric", "pay")) and "$VAULT:" not in task:
+                    typed_payload = f"{task} [Token: $VAULT:chase_ach_token]"
+                cx, cy = search_input.center
                 return AgentAction(
-                    thought=f"Identified input #{search_input.mark_id}. Typing command: '{task}'",
+                    thought=f"Identified input #{search_input.mark_id} ({search_input.selector}). Executing speculative focus + type macro.",
                     action="type",
                     mark_id=search_input.mark_id,
-                    text=task,
+                    text=typed_payload,
                     press_enter=True,
+                    macro_steps=[
+                        {"type": "click", "x": cx, "y": cy},
+                        {"type": "type", "text": typed_payload, "press_enter": True},
+                    ],
                 )
             return AgentAction(
                 thought="Navigating to target web resource",
@@ -393,22 +432,25 @@ class ActionEngine:
                 url="https://news.ycombinator.com",
             )
         elif step_count == 1:
-            # Match domain-specific button/link if available
             clickables = [m for m in marks if m.tag_name in ("a", "button")]
             preferred = None
+            is_high_stakes = False
             if any(k in lower_task for k in ("bill", "pge", "electric", "pay")):
                 preferred = next((m for m in clickables if "pay" in m.text.lower()), None)
+                is_high_stakes = True
             elif any(k in lower_task for k in ("flight", "delta", "check")):
                 preferred = next((m for m in clickables if "check" in m.text.lower()), None)
             elif any(k in lower_task for k in ("pizza", "order", "food")):
                 preferred = next((m for m in clickables if "order" in m.text.lower()), None)
+                is_high_stakes = True
 
             clickable = preferred or next(iter(clickables), None)
             if clickable:
                 return AgentAction(
-                    thought=f"Clicking element #{clickable.mark_id} ('{clickable.text}') to execute workflow",
+                    thought=f"Clicking element #{clickable.mark_id} ('{clickable.text}') via Dual-Stream Grounding ({clickable.selector})",
                     action="click",
                     mark_id=clickable.mark_id,
+                    requires_approval=is_high_stakes,
                 )
             return AgentAction(thought="Scrolling down page", action="scroll", delta_y=300)
         elif step_count == 2:
@@ -417,17 +459,17 @@ class ActionEngine:
             return AgentAction(
                 thought="Task goal satisfied from page observation.",
                 action="finish",
-                result=f"Completed task '{task}' successfully.",
+                result=f"Completed task '{self.vault.mask_text(task)}' successfully.",
             )
 
     async def execute_action(self, action: AgentAction, step_index: int = 0) -> None:
-        """Translates high-level AgentAction into browser actions."""
+        """Translates high-level AgentAction into browser actions with Dual-Stream fallback & Speculative Batching."""
         target_x, target_y = action.x, action.y
         dom_selector = ""
         if action.mark_id and action.mark_id in self.browser.last_marks:
             mark = self.browser.last_marks[action.mark_id]
             target_x, target_y = mark.center
-            dom_selector = f"{mark.tag_name}[mark='{mark.mark_id}']"
+            dom_selector = mark.selector or f"{mark.tag_name}[mark='{mark.mark_id}']"
 
         if target_x is None:
             target_x = self.browser.cursor_x
@@ -438,6 +480,17 @@ class ActionEngine:
         norm_y = round(max(0.0, min(1.0, target_y / float(self.browser.height))), 4)
 
         payload = action.model_dump()
+        if payload.get("text"):
+            payload["text"] = self.vault.mask_text(str(payload["text"]))
+        if payload.get("macro_steps"):
+            masked_steps = []
+            for st in payload["macro_steps"]:
+                st_copy = dict(st)
+                if st_copy.get("text"):
+                    st_copy["text"] = self.vault.mask_text(str(st_copy["text"]))
+                masked_steps.append(st_copy)
+            payload["macro_steps"] = masked_steps
+
         payload.update(
             {
                 "x": target_x,
@@ -448,12 +501,49 @@ class ActionEngine:
                 "dom_selector": dom_selector,
             }
         )
+
+        # High-Stakes Biometric / Operator Approval Gate
+        if action.requires_approval and self.require_operator_approval:
+            self.pending_approval = True
+            self.emit(
+                "approval_required",
+                {
+                    "task": self.current_task,
+                    "step": step_index,
+                    "thought": action.thought,
+                    "dom_selector": dom_selector,
+                },
+            )
+            while self.pending_approval and self.is_running:
+                import asyncio
+                await asyncio.sleep(0.2)
+            if not self.is_running:
+                return
+
         self.emit("action_start", payload)
 
-        if action.action == "navigate" and action.url:
+        if action.macro_steps:
+            plan = MacroPlan(
+                plan_name=f"speculative_step_{step_index}",
+                steps=action.macro_steps,
+                expected_outcome=action.thought or "macro_completed",
+            )
+            await self.speculative_planner.execute_macro_batch(plan)
+
+        elif action.action == "navigate" and action.url:
             await self.browser.navigate(action.url)
 
         elif action.action == "click":
+            page = await self.browser.ensure_page()
+            if page is not None and dom_selector:
+                await DualStreamGrounding.click_with_fallback(
+                    page=page,
+                    norm_x=norm_x * 1000.0,
+                    norm_y=norm_y * 1000.0,
+                    fallback_selector=dom_selector,
+                    screen_width=self.browser.width,
+                    screen_height=self.browser.height,
+                )
             await self.browser.human_click(target_x, target_y)
 
         elif action.action == "type":
@@ -489,10 +579,18 @@ class ActionEngine:
         self.emit("macro_plan_finished", {"plan_name": plan.plan_name, "success": ok})
         return {"status": "success" if ok else "failed", "plan_name": plan.plan_name}
 
-    async def run_task(self, task: str, max_steps: int = 10) -> Dict[str, Any]:
+    async def run_task(
+        self,
+        task: str,
+        max_steps: int = 10,
+        require_approval: Optional[bool] = None,
+    ) -> Dict[str, Any]:
         """Main agent perception-action loop."""
         self.is_running = True
         self.is_paused = False
+        self.pending_approval = False
+        if require_approval is not None:
+            self.require_operator_approval = require_approval
         self.current_task = task
         self.history = []
 
@@ -507,13 +605,28 @@ class ActionEngine:
                     await asyncio.sleep(0.3)
 
                 if not self.is_running:
+                    self.memory.record_episode(task, "aborted", None, len(self.history))
                     return {"status": "aborted", "steps": self.history}
 
                 tagged_bytes, marks = await self.browser.capture_tagged_screen()
                 action = await self.predict_next_action(task, tagged_bytes, marks)
-                self.history.append({"step": step, "action": action.model_dump()})
+                logged_action = action.model_dump()
+                if logged_action.get("text"):
+                    logged_action["text"] = self.vault.mask_text(str(logged_action["text"]))
+                if logged_action.get("macro_steps"):
+                    logged_action["macro_steps"] = [
+                        {
+                            **st,
+                            "text": self.vault.mask_text(str(st["text"]))
+                            if st.get("text")
+                            else st.get("text"),
+                        }
+                        for st in logged_action["macro_steps"]
+                    ]
+                self.history.append({"step": step, "action": logged_action})
 
                 if action.action == "finish":
+                    self.memory.record_episode(task, "success", action.result, len(self.history))
                     self.emit(
                         "task_finished",
                         {
@@ -531,11 +644,13 @@ class ActionEngine:
 
                 await self.execute_action(action, step_index=step)
 
+            result_msg = f"Completed {max_steps} steps for '{self.vault.mask_text(task)}'."
+            self.memory.record_episode(task, "completed_max_steps", result_msg, len(self.history))
             self.emit(
                 "task_finished",
                 {
                     "task": task,
-                    "result": f"Completed {max_steps} steps for '{task}'.",
+                    "result": result_msg,
                     "steps_completed": len(self.history),
                 },
             )
@@ -546,3 +661,4 @@ class ActionEngine:
             }
         finally:
             self.is_running = False
+            self.pending_approval = False

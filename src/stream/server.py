@@ -25,6 +25,7 @@ from src.sandbox.browser import BrowserController
 class TaskRequest(BaseModel):
     task: str
     max_steps: int = 10
+    require_approval: Optional[bool] = None
 
 
 class SDUICompileRequest(BaseModel):
@@ -36,6 +37,24 @@ class ModelSelectRequest(BaseModel):
     model_name: Optional[str] = None
     api_key: Optional[str] = None
     base_url: Optional[str] = None
+
+
+class OperatorInputRequest(BaseModel):
+    action: str = "click"
+    norm_x: Optional[float] = None
+    norm_y: Optional[float] = None
+    text: Optional[str] = None
+    delta_y: Optional[float] = None
+
+
+class MemoryPreferenceRequest(BaseModel):
+    key: str
+    value: Any
+
+
+class VaultSecretRequest(BaseModel):
+    handle: str
+    secret_value: str
 
 
 def create_app(
@@ -143,7 +162,13 @@ def create_app(
             await asyncio.sleep(0.1)
 
         sdui_widget = SDUICompiler.compile_for_prompt(req.task)
-        asyncio.create_task(engine_instance.run_task(req.task, max_steps=req.max_steps))
+        asyncio.create_task(
+            engine_instance.run_task(
+                req.task,
+                max_steps=req.max_steps,
+                require_approval=req.require_approval,
+            )
+        )
         return {
             "status": "started",
             "task": req.task,
@@ -160,10 +185,33 @@ def create_app(
         engine_instance.is_paused = False
         return {"status": "resumed"}
 
+    @app.post("/api/task/approve")
+    async def approve_task():
+        return engine_instance.approve_pending()
+
     @app.post("/api/task/abort")
     async def abort_task():
         engine_instance.abort()
         return {"status": "aborted"}
+
+    @app.post("/api/sandbox/input")
+    async def sandbox_operator_input(req: OperatorInputRequest):
+        result = await browser_instance.operator_input(
+            action=req.action,
+            norm_x=req.norm_x,
+            norm_y=req.norm_y,
+            text=req.text,
+            delta_y=req.delta_y,
+        )
+        engine_instance.emit(
+            "operator_input",
+            {
+                "action": req.action,
+                "norm_x": result["cursor"]["norm_x"],
+                "norm_y": result["cursor"]["norm_y"],
+            },
+        )
+        return result
 
     @app.post("/api/task/macro")
     async def execute_macro(plan: MacroPlan):
@@ -188,12 +236,33 @@ def create_app(
         )
         return {"status": "updated", "active": active}
 
+    @app.get("/api/memory")
+    async def get_memory():
+        return engine_instance.memory.get_summary(
+            vault_handles=engine_instance.vault.list_handles()
+        )
+
+    @app.post("/api/memory")
+    async def update_memory(req: MemoryPreferenceRequest):
+        prefs = engine_instance.memory.remember(req.key, req.value)
+        return {"status": "saved", "preferences": prefs}
+
+    @app.get("/api/vault/handles")
+    async def list_vault_handles():
+        return {"handles": engine_instance.vault.list_handles()}
+
+    @app.post("/api/vault/secret")
+    async def set_vault_secret(req: VaultSecretRequest):
+        token = engine_instance.vault.set_secret(req.handle, req.secret_value)
+        return {"status": "sealed", "handle": token}
+
     @app.get("/api/task/status")
     async def get_status():
         nx, ny = browser_instance.norm_cursor
         return {
             "is_running": engine_instance.is_running,
             "is_paused": engine_instance.is_paused,
+            "pending_approval": engine_instance.pending_approval,
             "current_task": engine_instance.current_task,
             "model": engine_instance.get_active_model_info(),
             "cursor": {

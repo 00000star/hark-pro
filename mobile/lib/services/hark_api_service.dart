@@ -29,6 +29,8 @@ class HarkTelemetryFrame {
   final String status;
   final Uint8List? screenFrameJpeg;
   final int timestamp;
+  final bool requiresApproval;
+  final String? pendingAction;
 
   const HarkTelemetryFrame({
     required this.cursorX,
@@ -40,6 +42,8 @@ class HarkTelemetryFrame {
     this.status = 'running',
     this.screenFrameJpeg,
     required this.timestamp,
+    this.requiresApproval = false,
+    this.pendingAction,
   });
 }
 
@@ -228,6 +232,44 @@ class HarkApiService {
           _currentRunningTask!.progress = 0.0;
           _taskUpdateController.add(_currentRunningTask!);
         }
+      } else if (event == 'operator_approval_required') {
+        final thought = payload['thought']?.toString() ??
+            'High-stakes action requires operator confirmation.';
+        final action = payload['action']?.toString() ?? 'confirm';
+        _telemetryController.add(
+          HarkTelemetryFrame(
+            cursorX: 0.5,
+            cursorY: 0.5,
+            thought: thought,
+            status: 'approval_required',
+            requiresApproval: true,
+            pendingAction: action,
+            timestamp: DateTime.now().millisecondsSinceEpoch,
+          ),
+        );
+      } else if (event == 'operator_approval_granted') {
+        _telemetryController.add(
+          HarkTelemetryFrame(
+            cursorX: 0.5,
+            cursorY: 0.5,
+            thought: 'Operator authorization granted. Resuming execution...',
+            status: 'running',
+            requiresApproval: false,
+            timestamp: DateTime.now().millisecondsSinceEpoch,
+          ),
+        );
+      } else if (event == 'operator_input') {
+        final normX = (payload['norm_x'] as num?)?.toDouble() ?? 0.5;
+        final normY = (payload['norm_y'] as num?)?.toDouble() ?? 0.5;
+        _telemetryController.add(
+          HarkTelemetryFrame(
+            cursorX: normX.clamp(0.0, 1.0),
+            cursorY: normY.clamp(0.0, 1.0),
+            thought: 'Operator takeover input received.',
+            status: 'takeover',
+            timestamp: DateTime.now().millisecondsSinceEpoch,
+          ),
+        );
       }
     } catch (_) {}
   }
