@@ -63,6 +63,10 @@ class ZeroKnowledgeVault:
 
         return self.VAULT_PATTERN.sub(_replacer, text)
 
+    def resolve_token(self, text: str) -> str:
+        """Alias for resolve()."""
+        return self.resolve(text)
+
 
 class AgentMemory:
     """
@@ -149,5 +153,6 @@ class AgentMemory:
             "preferences": self.preferences,
             "vault_handles": vault_handles or [],
             "episodes_count": len(self.episodes),
+            "total_episodes": len(self.episodes),
             "recent_episodes": self.episodes[-10:],
         }
